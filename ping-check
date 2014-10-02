@@ -1,0 +1,363 @@
+#!/bin/bash
+# ping-check [opts] [TARGET]
+
+PROG="${0##*/}"
+
+export PATH=$PATH:$HOME/lib
+source sh-utils.sh
+source list-utils.sh
+
+DEFAULT_TARGETS="192.168.15.1 8.8.8.8"
+
+logfile=$HOME/pingcheck.log
+pidfile=$HOME/pingcheck.pid
+
+usage() {
+  cat 1>&2 <<EOF
+usage: $PROG [options] [TARGET] ..
+Periodically ping one or more TARGET IP addresses and keep track of results.
+
+The default TARGETs are $DEFAULT_TARGETS.
+
+This script is intended to monitor the network uptime, and produce a log file
+of uptime data, or periodical outage data.
+
+Unless the -f option is given, the job will automatically background itself.
+
+The output is collected into "~/pingcheck.log".
+
+The PID of the currently running process (if any) is stored in "~/.ping-check.pid"
+
+Options:
+  -h      show this help
+  -k      kill the currently running ping-check process
+  -l      list the currently running ping-check process (if any)
+  -n      no run (don't actually do commands)
+  -f      foreground; don't automatically background the ping process
+  -v      be verbose
+
+FILES
+
+~/ping-check.log
+
+    the output of the currently running ping-check process
+
+~/ping-check.pid
+
+    the process id of the currently running ping-check process
+EOF
+  exit
+}
+
+logit() {
+  if [[ ! -f "$logfile" ]]; then
+    run "touch $logfile"
+  fi
+  if (( verbose )) ;then
+    eval "$@" |& tee -a $logfile
+  else
+    eval "$@ &>>$logfile"
+  fi
+}
+
+# ping_check ADDRESS ...
+#
+# the code below starts pinging the given ADDRESS(es) every minute.  If the
+# pings are successful, after five minutes, the delay between consecutive pings
+# gradually increases by half-minutes until the delay is every 30 minutes
+#
+# Once an error occurs, then the delay resets to a ping every 30 seconds
+#
+# All the ping results get logged to $logfile
+
+ping_check() {
+
+  ping_delay=60
+  ping_loops=0
+  max_ping_loops=5
+  delay_increment=30
+  default_ping_count=3
+  error_ping_count=30
+  max_ping_delay=$(( 60 * 30 ))
+
+  declare -A fail_start=()
+  ping_count=$default_ping_count
+  ts=
+
+  while true ; do
+    for target in "${targets[@]}" ; do
+      if ping_target ; then
+        maybe_log_previous_error
+        maybe_log_success
+      else
+        track_error
+        maybe_log_error
+        set_delay_for_errors
+      fi
+    done
+    maybe_adjust_ping_delay
+    delay_some
+  done
+}
+
+# ping_target
+#
+# ping $target, for $ping_count iterations, without output
+# return 0 for okay, 1 for not
+#
+# Uses: ts, target, ping_count
+# Sets: lastts, lasttarget, ts, tsecs
+
+ping_target() {
+  lastts="$ts"
+  lasttarget="$target"
+  ts=`date +'%F.%T'`
+  tsecs=`date +%s`
+  run "ping -c $ping_count -o -q $target &>/dev/null"
+}
+
+# maybe_log_previous_error
+#
+# check to see if okay on $target was after a previous error
+# if so, log the duration of the error
+#
+# Uses: fail_start[$target], tsecs, ts, default_ping_count
+# Sets: fail_start[$target], ping_count
+
+maybe_log_previous_error() {
+  if [[ -n "${fail_start[$target]}" ]]; then  # recovering from a failure on this target?
+    local fail_time
+    let fail_time=( tsecs - ${fail_start[$target]} )
+    run "logit $ts FAIL - failure duration was $fail_time seconds"
+    fail_start[$target]=
+    ping_count=$default_ping_count
+  fi
+}
+
+# maybe_log_success
+#
+# Log an OK once per target & timestamp
+#
+# Uses: target, lasttarget, ts, lastts
+
+maybe_log_success() {
+  if [[ "$target" != "$lasttarget" && "$ts" != "$lastts" ]]; then
+    run "logit echo $ts OK   - $target"
+  fi
+}
+
+# track_error
+#
+# Invoked after a ping error, track the first start time of
+# consecutive ping errors.
+#
+# Uses: fail_start[$target], tsecs
+# Sets: fail_start[$target]
+
+track_error() {
+  if [[ -z "${fail_start[$target]}" ]]; then    # first failure?
+    fail_start[$target]=$tsecs                  # yes, capture the start
+  fi
+}
+
+# maybe_log_error
+#
+# Log an error only once for a given target and timestamp
+#
+# Uses: ts, lastts, target, lasttarget
+
+maybe_log_error() {
+  if [[ "$ts" != "$lastts" || "$target" != "$lasttarget" ]]; then
+    run "logit echo $ts FAIL - $target"
+  fi
+}
+
+# set_delay_for_errors
+#
+# Set the delay, count, and ping_count as appropriate for errors
+#
+# Sets: ping_delay, ping_loops, ping_count
+
+set_delay_for_errors() {
+  ping_delay=10                        # reset delays after next success
+  ping_loops=0                         # reset loop count after failure
+  ping_count=$error_ping_count
+}
+
+# maybe_adjust_ping_delay
+#
+# Invoked after a successful ping, adjust ping_delay and/or ping_count such
+# that consecutive successes induce longer delays, up to the maximum.
+
+maybe_adjust_ping_delay() {
+  if (( ping_loops++ >= max_ping_loops )); then       # no error
+    let ping_delay+=delay_increment                   # bump the ping delay
+    if (( ping_delay > max_ping_delay )); then        # up to a maximum
+      let ping_delay=max_ping_delay
+    fi
+    ping_loops=0
+  fi
+}
+
+# delay_some
+#
+# Wait for a given number of seconds.
+#
+# Uses: ping_delay
+
+delay_some() {
+  run "sleep $ping_delay"
+}
+
+
+##### The old code
+#
+#     # finally, ping a target address
+#     if run "ping -c $ping_count -o -q $target &>/dev/null" ; then
+#       if [[ -n "${fail_start[$target]}" ]]; then  # recovering from a failure on this target?
+#         let fail_time=( tsecs - ${fail_start[$target]} )
+#         run "logit $ts FAIL - failure duration was $fail_time seconds"
+#         fail_start[$target]=
+#         ping_count=$default_ping_count
+#       fi
+#       run "logit echo $ts OK   - $target"
+#       if (( count++ >= max_count )); then       # no error
+#         let delay+=delay_increment
+#         if (( delay > max_delay )); then
+#           let delay=max_delay
+#         fi
+#         count=0
+#       fi
+#       run "sleep $delay"
+#     else                                            # an error; get more details
+#       if [[ -z "${fail_start[$target]}" ]]; then    # first failure?
+#         fail_start[$target]=$tsecs                  # yes, capture the start
+#       fi
+#       if [[ "$ts" != "$lastts" || "$target" != "$lasttarget" ]]; then
+#         run "logit echo $ts FAIL - $target"
+#       fi
+#       delay=10    # reset delays after next success
+#       count=0     # reset count after failure
+#       ping_count=$error_ping_count
+#       continue    # no delay
+#     fi
+
+show_ping_checks() {
+  ps axuww | awk 'NR==1 || /ping-check/ && !/awk/'
+}
+
+check_pid_running() {
+  [[ -n "`ps uxw -p $1 | tail +2 2>/dev/null`" ]] && return 0
+  return 1
+}
+
+# Check for a running "ping-check", and set 'pid' as a side-effect
+
+check_ping_check() {
+  list_init pids
+  pids="`ps auxww | awk '/ping-check/ && $11 !~ /awk/ && $11 !~ /vi/ && !/ping-check -[lk]/{print $2}'`"
+  if [[ -n "$pids" ]]; then
+    list_add pids `echo $pids`
+    list_remove pids $$
+    pid=`list_get pids 0`
+    (( `list_size pids` > 0 )) && return 0
+  fi
+  return 1
+}
+
+list_procs() {
+  if [[ -s $pidfile ]]; then
+    pid=`cat $pidfile 2>/dev/null`
+    if ! check_pid_running $pid ; then
+      talk "ping-check [pid=$pid] is registered, but NOT running."
+    else
+      talk "ping-check [pid=$pid] is running"
+      show_ping_checks
+    fi
+  elif check_ping_check ; then
+    talk "An unregistered ping-check is running!"
+    show_ping_checks
+  else
+    talk "No ping-checks running or registered."
+  fi
+  exit
+}
+
+kill_ping_check() {
+  if [[ -s $pidfile ]]; then
+    pid=`cat $pidfile`
+    if check_pid_running $pid ; then
+      talk "ping-check [pid=$pid] registered and running"
+      kill_pid $pid
+    else
+      talk "ping-check [pid=$pid] is registered but NOT running"
+    fi
+    run "rm -f $pidfile"    # remove the pid file
+    talk "$pidfile removed"
+  elif check_ping_check ; then
+    talk "Unregistered ping-check [pid=$pid] is running"
+    kill_pid $pid
+  else
+    talk "No ping-check running"
+  fi
+  exit
+}
+
+kill_pid() {
+  local pid=$1
+  local signal
+  for signal in QUIT TERM KILL ; do
+    vtalk "Killing pid $pid with $signal .."
+    kill -$signal $pid
+    sleep 1
+    check_pid_running $pid || break
+  done
+  if check_pid_running $pid ; then
+    talk "Cannot kill pid $pid!"
+  else
+    talk "pid $pid killed"
+  fi
+}
+
+
+while getopts 'fklhnv' opt ; do
+  case "$opt" in
+    h) usage ;;
+    f) foreground=1 ;;
+    k) kill_proc=1 ;;
+    l) list_proc=1 ;;
+    n) norun=1 ;;
+    v) verbose=1 ;;
+  esac
+done
+shift $(( OPTIND - 1 ))
+
+if (( $# > 0 )) ; then
+  targets=( "$@" )
+else
+  targets=( $DEFAULT_TARGETS )
+fi
+
+if (( list_proc )); then
+  list_procs
+elif (( kill_proc )); then
+  kill_ping_check
+elif (( foreground )) ; then
+  run "ping_check $target"
+else
+  if [[ -s $pidfile ]]; then
+    pid=`cat $pidfile`
+    talk "ping-check [pid=$pid] already running"
+    exit
+  else
+    run "ping_check ${targets[@]} &"
+    pid=`jobs -p %1`
+    if [[ -n "$pid" ]]; then
+      run "echo $pid >$pidfile"
+      talk "ping-check (pid=$pid) started in background"
+      talk "Check $logfile for results"
+    fi
+  fi
+fi
+
+exit
