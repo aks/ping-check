@@ -16,8 +16,8 @@ source list-utils.sh
 
 DEFAULT_TARGETS="8.8.8.8"
 
-logfile=$HOME/pingcheck.log
-pidfile=$HOME/pingcheck.pid
+declare -g logfile=$HOME/pingcheck.log
+declare -g pidfile=$HOME/pingcheck.pid
 
 usage() {
   default_gw=`default_gateway`
@@ -85,32 +85,52 @@ logit() {
 
 ping_check() {
 
-  ping_delay=60
-  ping_loops=0
-  max_ping_loops=5
-  delay_increment=30
-  default_ping_count=3
-  error_ping_count=30
-  max_ping_delay=$(( 60 * 30 ))
+  set_targets "$@"
 
-  declare -A fail_start=()
+  declare -g ping_delay=30
+  declare -g ping_loops=0
+  declare -g max_ping_loops=5
+  declare -g delay_increment=30
+  declare -g default_ping_count=3
+  declare -g error_ping_count=30
+  declare -g max_ping_delay=$(( 60 * 30 ))
+
+  declare -Ag fail_start=()
+
   ping_count=$default_ping_count
-  ts=
+
+  declare -g target ts lastts target lasttarget
+
+  logit "echo ''"
+  logit "date"
+  logit "echo \"Ping targets: ${targets[@]}\""
 
   while true ; do
     for target in "${targets[@]}" ; do
       if ping_target ; then
         maybe_log_previous_error
-        maybe_log_success
+        maybe_log_status OK
       else
         track_error
-        maybe_log_error
+        maybe_log_status FAIL
         set_delay_for_errors
       fi
     done
     maybe_adjust_ping_delay
     delay_some
   done
+}
+
+# set_targets TARGET ...
+
+set_targets() {
+  declare -ag targets
+  if (( $# > 0 )) ; then
+    targets=( "$@" )
+  else
+    targets=( `default_gateway` $DEFAULT_TARGETS )
+    talk "Using default targets: ${targets[@]}"
+  fi
 }
 
 # ping_target
@@ -122,11 +142,10 @@ ping_check() {
 # Sets: lastts, lasttarget, ts, tsecs
 
 ping_target() {
-  lastts="$ts"
-  lasttarget="$target"
+  declare -g ts tsecs
   ts=`date +'%F.%T'`
   tsecs=`date +%s`
-  run "ping -c $ping_count -o -q $target &>/dev/null"
+  run "/sbin/ping -c $ping_count -o -q $target &>/dev/null"
 }
 
 # maybe_log_previous_error
@@ -147,18 +166,6 @@ maybe_log_previous_error() {
   fi
 }
 
-# maybe_log_success
-#
-# Log an OK once per target & timestamp
-#
-# Uses: target, lasttarget, ts, lastts
-
-maybe_log_success() {
-  if [[ "$target" != "$lasttarget" && "$ts" != "$lastts" ]]; then
-    run "logit echo $ts OK   - $target"
-  fi
-}
-
 # track_error
 #
 # Invoked after a ping error, track the first start time of
@@ -168,20 +175,22 @@ maybe_log_success() {
 # Sets: fail_start[$target]
 
 track_error() {
+  declare -Ag fail_start
   if [[ -z "${fail_start[$target]}" ]]; then    # first failure?
     fail_start[$target]=$tsecs                  # yes, capture the start
   fi
 }
 
-# maybe_log_error
-#
-# Log an error only once for a given target and timestamp
+# maybe_log_status [OK | FAIL]
 #
 # Uses: ts, lastts, target, lasttarget
 
-maybe_log_error() {
-  if [[ "$ts" != "$lastts" || "$target" != "$lasttarget" ]]; then
-    run "logit echo $ts FAIL - $target"
+maybe_log_status() {
+  if [[ ! ( "$ts" == "$lastts" && "$target" == "$lasttarget" ) ]]; then
+    local status="$1    "
+    status="${status:0:4}"
+    run "logit echo $ts $status - $target"
+    declare -g lastts="$ts"  lasttarget="$target"
   fi
 }
 
@@ -192,9 +201,9 @@ maybe_log_error() {
 # Sets: ping_delay, ping_loops, ping_count
 
 set_delay_for_errors() {
-  ping_delay=10                        # reset delays after next success
-  ping_loops=0                         # reset loop count after failure
-  ping_count=$error_ping_count
+  declare -g ping_delay=10                        # reset delays after next success
+  declare -g ping_loops=0                         # reset loop count after failure
+  declare -g ping_count=$error_ping_count
 }
 
 # maybe_adjust_ping_delay
@@ -203,6 +212,7 @@ set_delay_for_errors() {
 # that consecutive successes induce longer delays, up to the maximum.
 
 maybe_adjust_ping_delay() {
+  declare -g ping_delay ping_loops
   if (( ping_loops++ >= max_ping_loops )); then       # no error
     let ping_delay+=delay_increment                   # bump the ping delay
     if (( ping_delay > max_ping_delay )); then        # up to a maximum
@@ -219,41 +229,8 @@ maybe_adjust_ping_delay() {
 # Uses: ping_delay
 
 delay_some() {
-  run "sleep $ping_delay"
+  run "/bin/sleep $ping_delay"
 }
-
-
-##### The old code
-#
-#     # finally, ping a target address
-#     if run "ping -c $ping_count -o -q $target &>/dev/null" ; then
-#       if [[ -n "${fail_start[$target]}" ]]; then  # recovering from a failure on this target?
-#         let fail_time=( tsecs - ${fail_start[$target]} )
-#         run "logit $ts FAIL - failure duration was $fail_time seconds"
-#         fail_start[$target]=
-#         ping_count=$default_ping_count
-#       fi
-#       run "logit echo $ts OK   - $target"
-#       if (( count++ >= max_count )); then       # no error
-#         let delay+=delay_increment
-#         if (( delay > max_delay )); then
-#           let delay=max_delay
-#         fi
-#         count=0
-#       fi
-#       run "sleep $delay"
-#     else                                            # an error; get more details
-#       if [[ -z "${fail_start[$target]}" ]]; then    # first failure?
-#         fail_start[$target]=$tsecs                  # yes, capture the start
-#       fi
-#       if [[ "$ts" != "$lastts" || "$target" != "$lasttarget" ]]; then
-#         run "logit echo $ts FAIL - $target"
-#       fi
-#       delay=10    # reset delays after next success
-#       count=0     # reset count after failure
-#       ping_count=$error_ping_count
-#       continue    # no delay
-#     fi
 
 show_ping_checks() {
   ps axuww | awk 'NR==1 || /ping-check/ && !/awk/'
@@ -345,31 +322,23 @@ while getopts 'fklhnv' opt ; do
 done
 shift $(( OPTIND - 1 ))
 
-if (( $# > 0 )) ; then
-  targets=( "$@" )
-else
-  targets=( $default_gw $DEFAULT_TARGETS )
-fi
-
 if (( list_proc )); then
   list_procs
 elif (( kill_proc )); then
   kill_ping_check
 elif (( foreground )) ; then
-  run "ping_check $target"
+  run "ping_check $@"
 else
   if [[ -s $pidfile ]]; then
     pid=`cat $pidfile`
     talk "ping-check [pid=$pid] already running"
     exit
   else
-    run "ping_check ${targets[@]} &"
-    pid=`jobs -p %1`
-    if [[ -n "$pid" ]]; then
-      run "echo $pid >$pidfile"
-      talk "ping-check (pid=$pid) started in background"
-      talk "Check $logfile for results"
-    fi
+    run "ping_check $@ &"
+    pid=$!
+    run "echo $pid >$pidfile"
+    talk "ping-check (pid=$pid) started in background"
+    talk "Check $logfile for results"
   fi
 fi
 
