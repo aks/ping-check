@@ -13,17 +13,20 @@ export PATH=$PATH:$HOME/lib
 source sh-utils.sh
 source list-utils.sh
 
-DEFAULT_TARGETS="192.168.15.1 8.8.8.8"
+
+DEFAULT_TARGETS="8.8.8.8"
 
 logfile=$HOME/pingcheck.log
 pidfile=$HOME/pingcheck.pid
 
 usage() {
+  default_gw=`default_gateway`
   cat 1>&2 <<EOF
 usage: $PROG [options] [TARGET] ..
 Periodically ping one or more TARGET IP addresses and keep track of results.
 
-The default TARGETs are $DEFAULT_TARGETS.
+The default TARGETs are $DEFAULT_TARGETS, and $default_gw, the current default
+gateway.
 
 This script is intended to monitor the network uptime, and produce a log file
 of uptime data, or periodical outage data.
@@ -53,6 +56,10 @@ FILES
     the process id of the currently running ping-check process
 EOF
   exit
+}
+
+default_gateway() {
+  netstat -rn -f inet | awk '/default/ && $4 > 0 {print $2}'
 }
 
 logit() {
@@ -341,7 +348,7 @@ shift $(( OPTIND - 1 ))
 if (( $# > 0 )) ; then
   targets=( "$@" )
 else
-  targets=( $DEFAULT_TARGETS )
+  targets=( $default_gw $DEFAULT_TARGETS )
 fi
 
 if (( list_proc )); then

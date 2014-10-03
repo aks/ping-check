@@ -33,7 +33,8 @@ Usage
 
 Periodically ping one or more TARGET IP addresses and keep track of results.
 
-The default TARGETs are 192.168.15.1 8.8.8.8.
+The default TARGETs are `8.8.8.8`, and the current default gateway, which
+is determined dynamically, using the `netstat` command.
 
 This script is intended to monitor the network uptime, and produce a log file
 of uptime data, or periodical outage data.
