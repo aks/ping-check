@@ -1,5 +1,7 @@
 ping-check
-----------
+==========
+Ping multiple targets and keep track of results
+
 Working from home provides some benefits, but also creates some problems.  Such
 as when your cable modem mysteriously decides to be non-repsonsive, even while
 it is passing data across its interfaces.
@@ -14,7 +16,20 @@ _Note: nobody cares when things are working well, but when they are not
 working reliably, then you need lots of data, especially when dealing with
 the cable service providers._
 
-    usage: ping-check [options] [TARGET] ..
+Installation
+------------
+
+    cd ~/src/github # or wherever you wish to have this repo
+    git clone git://github.com/aks/ping-check.git
+    cd ping-check
+    make install
+
+This code depends on [bash-lib](https://github.com/aks/bash-lib) and the `make
+install` will check for dependencies, and install them if needed.
+
+Usage
+-----
+    ping-check [options] [TARGET] ..
 
 Periodically ping one or more TARGET IP addresses and keep track of results.
 
@@ -32,10 +47,15 @@ The PID of the currently running process (if any) is stored in `~/.ping-check.pi
 Options:
 
   `-h`      show this help
+
   `-k`      kill the currently running ping-check process
+
   `-l`      list the currently running ping-check process (if any)
+
   `-n`      no run (don't actually do commands)
+
   `-f`      foreground; don't automatically background the ping process
+
   `-v`      be verbose
 
 FILES

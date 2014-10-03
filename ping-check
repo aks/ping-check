@@ -1,5 +1,11 @@
 #!/bin/bash
 # ping-check [opts] [TARGET]
+#
+# ping multiple targets and keep track of results
+#
+# Copyright 2014 Alan K. Stebbens <aks@stebbens.org>
+#
+# This script uses bash-lib (https://github.com/aks/bash-lib.git)
 
 PROG="${0##*/}"
 
